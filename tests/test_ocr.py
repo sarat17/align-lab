@@ -85,3 +85,21 @@ def test_word_after_nueva_only_matches_nueva_places():
 def test_screw_read_as_number_at_line_start_is_removed():
     assert _clean_words(_w("7", "Altura", "del", "ejemplar:", "14", "metros"), strict=True) == \
         "Altura del ejemplar: 14 metros"
+
+
+def test_origin_label_and_nueva_are_rebuilt():
+    line = [("pgonr", 40), ("originario:", 90), ("África", 95), ("Oriental", 95), ("-", 90),
+            ("Sudáfrica", 95), ("-", 90), ("Nueva", 96), ("Ze", 50), ("LON", 40)]
+    assert _clean_words(line, strict=True) == \
+        "Lugar originario: África Oriental - Sudáfrica - Nueva Zelanda"
+    line = [("originario:", 90), ("Nueva", 96), ("4", 60)]
+    assert _clean_words(line, strict=True) == "Lugar originario: Nueva Zelanda"
+    assert _clean_words(_w("Lugar", "originario:", "México", "4"), strict=True) == "Lugar originario: México"
+
+
+def test_split_name_is_joined():
+    from src.ocr import _join_split_word
+    assert _join_split_word("Cip rés") == "Ciprés"
+    assert _join_split_word("Pino candelabro") == "Pino candelabro"
+    assert _join_split_word("Pino de agua") == "Pino de agua"
+    assert _join_split_word("Ají dulce") == "Ají dulce"
