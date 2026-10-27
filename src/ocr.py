@@ -143,10 +143,29 @@ def _alnum(word: str) -> str:
     return re.sub(r"[^\w]", "", word)
 
 
-def _fix_place(word: str) -> str:
-    """Corrige una palabra dudosa con la lista de lugares (conserva la puntuación final)."""
+# Lugares que empiezan por "Nueva": la palabra siguiente solo se compara con estas.
+_NUEVA = ("Zelanda", "Guinea", "Caledonia", "Granada", "Escocia", "Gales del Sur")
+
+
+def _fix_place(word: str, previous: str = "") -> str:
+    """Corrige una palabra dudosa con la lista de lugares (conserva la puntuación final).
+
+    Después de "Nueva" solo se aceptan los lugares de ``_NUEVA`` (evita "Nueva Venezuela").
+    """
     core = word.rstrip(",.;:")
-    match = difflib.get_close_matches(core, _PLACES, n=1, cutoff=0.5)
+    if core in _NUEVA or (core in _PLACES and _alnum(previous).lower() != "nueva"):
+        return word
+    if _alnum(previous).lower() == "nueva":
+        # Parecido + misma letra inicial + leve preferencia por los más comunes (orden de la lista).
+        def score(i_cand):
+            i, cand = i_cand
+            same_start = core[:1].lower() == cand[:1].lower()
+            return difflib.SequenceMatcher(None, core.lower(), cand.lower()).ratio() + 0.3 * same_start \
+                + 0.03 * (len(_NUEVA) - i)
+        best = max(enumerate(_NUEVA), key=score)[1]
+        match = [best]
+    else:
+        match = difflib.get_close_matches(core, _PLACES, n=1, cutoff=0.5)
     return match[0] + word[len(core):] if match else word
 
 
@@ -178,14 +197,19 @@ def _clean_words(words: list[tuple[str, float]], strict: bool = False) -> str:
 
     while kept and is_junk(kept[0][0]):
         kept.pop(0)
+    if strict:  # las líneas de información empiezan con una etiqueta: nada de números o signos antes
+        while kept and not re.match(r"[^\W\d_]", kept[0][0]):
+            kept.pop(0)
     while kept and is_junk(kept[-1][0]):
         kept.pop()
 
     line = " ".join(w for w, _ in kept)
     if strict and _LABELS[1][0].match(line):  # "Lugar originario: ..."
-        for item in kept[2:]:
-            if item[1] < 60 and len(_alnum(item[0])) >= 4:
-                item[0] = _fix_place(item[0])
+        for i in range(2, len(kept)):
+            word, conf = kept[i]
+            after_nueva = _alnum(kept[i - 1][0]).lower() == "nueva"
+            if len(_alnum(word)) >= 4 and (conf < 60 or after_nueva):
+                kept[i][0] = _fix_place(word, kept[i - 1][0])
         line = " ".join(w for w, _ in kept)
 
     line = re.sub(r"^Nombre\W+cient", "Nombre cient", line)
