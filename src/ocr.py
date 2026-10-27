@@ -16,13 +16,15 @@ import numpy as np
 
 # Cada campo: (x, y, w, h) en píxeles de la plantilla.
 FIELDS: dict[str, tuple[int, int, int, int]] = {
-    "nombre": (440, 240, 460, 130),
+    # Ancho casi completo: los nombres van centrados y su largo cambia de un árbol a otro.
+    "nombre": (150, 235, 1050, 135),
     "informacion": (99, 360, 1200, 240),
     "autor": (250, 630, 850, 140),
     "id_arbol": (10, 30, 250, 190),
 }
 
 NUMERIC_FIELDS = {"id_arbol"}
+SINGLE_LINE_FIELDS = {"nombre"}  # una sola línea de texto: --psm 7
 
 # Rutas habituales del instalador de Tesseract en Windows.
 _WINDOWS_PATHS = (
@@ -51,6 +53,15 @@ def _get_pytesseract():
                 "https://github.com/UB-Mannheim/tesseract/wiki ; en Streamlit Cloud se instala con packages.txt."
             )
     return pytesseract
+
+
+def _text_lang(pytesseract) -> str:
+    """Usa español (lee tildes y ñ) si está instalado; si no, inglés."""
+    try:
+        langs = set(pytesseract.get_languages(config=""))
+    except Exception:
+        return "eng"
+    return "spa+eng" if "spa" in langs else "eng"
 
 
 def ocr_available() -> bool:
@@ -98,7 +109,8 @@ def extract_fields(aligned_bgr: np.ndarray, fields: dict | None = None):
             ).strip()
         else:
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            text = pytesseract.image_to_string(thresh, lang="eng").strip()
+            config = "--psm 7" if field in SINGLE_LINE_FIELDS else ""
+            text = pytesseract.image_to_string(thresh, lang=_text_lang(pytesseract), config=config).strip()
 
         results[field] = text
         cv2.rectangle(annotated, (x0, y0), (x1, y1), (0, 255, 0), 2)
