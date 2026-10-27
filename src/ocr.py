@@ -16,6 +16,7 @@ Mejoras para fotos reales de las placas:
 from __future__ import annotations
 
 import difflib
+from collections import Counter
 import os
 import re
 import shutil
@@ -38,10 +39,12 @@ NUMERIC_FIELDS = {"id_arbol"}
 SINGLE_LINE_FIELDS = {"nombre", "autor"}  # una sola línea de texto: --psm 7
 
 # Etiquetas fijas que aparecen al inicio de las líneas de información.
+# Basta con reconocer la palabra clave ("cient…", "orig…", "ejem…"): lo que haya antes, aunque
+# el OCR lo lea mal ("pgonr originario"), se reemplaza por la etiqueta correcta.
 _LABELS = (
-    (re.compile(r"^\W*N\w{3,7}\W+cien\w*\W*", re.I), "Nombre científico: "),
-    (re.compile(r"^\W*L\w{2,4}\W+or\w*\W*", re.I), "Lugar originario: "),
-    (re.compile(r"^\W*A\w{3,6}\W+del\W+ej\w*\W*", re.I), "Altura del ejemplar: "),
+    (re.compile(r"^.{0,12}?cien\w*\W*", re.I), "Nombre científico: "),
+    (re.compile(r"^.{0,12}?orig\w*\W*", re.I), "Lugar originario: "),
+    (re.compile(r"^.{0,16}?ejem\w*\W*", re.I), "Altura del ejemplar: "),
 )
 
 # Países y regiones (en español) para corregir palabras dudosas del lugar de origen.
@@ -114,8 +117,33 @@ def _prepare_text(gray: np.ndarray) -> np.ndarray:
     return thresh
 
 
+def _isolate_digits(binary: np.ndarray, height: int) -> np.ndarray | None:
+    """Deja solo los dígitos (manchas negras de altura razonable que no tocan el borde),
+    los recorta y los escala a ``height`` píxeles: Tesseract lee mal los números muy grandes."""
+    H, W = binary.shape
+    n, labels, st, _ = cv2.connectedComponentsWithStats(255 - binary)
+    keep = [k for k in range(1, n)
+            if 0.25 * H <= st[k, 3] <= 0.9 * H and st[k, 2] <= 0.5 * W
+            and st[k, 0] > 0 and st[k, 1] > 0 and st[k, 0] + st[k, 2] < W and st[k, 1] + st[k, 3] < H]
+    if not keep:
+        return None
+    x0 = min(st[k, 0] for k in keep)
+    y0 = min(st[k, 1] for k in keep)
+    x1 = max(st[k, 0] + st[k, 2] for k in keep)
+    y1 = max(st[k, 1] + st[k, 3] for k in keep)
+    digits = np.where(np.isin(labels, keep), 0, 255).astype(np.uint8)[y0:y1, x0:x1]
+    f = height / digits.shape[0]
+    digits = cv2.resize(digits, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    _, digits = cv2.threshold(digits, 127, 255, cv2.THRESH_BINARY)
+    return cv2.copyMakeBorder(digits, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+
+
 def _read_number(pytesseract, roi_bgr: np.ndarray) -> str:
-    """Lee el número blanco dentro del cuadro verde. Si no lo encuentra, usa toda la región."""
+    """Lee el número blanco dentro del cuadro verde.
+
+    El 5, el 6 y el 9 se confunden con facilidad, así que los dígitos se aíslan, se llevan a
+    varios tamaños y gana la lectura más repetida. Si no hay cuadro verde, usa toda la región.
+    """
     config = "--psm 7 -c tessedit_char_whitelist=0123456789"
     hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, (30, 60, 60), (90, 255, 255))  # verde
@@ -125,14 +153,21 @@ def _read_number(pytesseract, roi_bgr: np.ndarray) -> str:
         i = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
         x, y, w, h, area = stats[i]
         if area > 0.05 * roi_bgr.shape[0] * roi_bgr.shape[1] and w > 8 and h > 8:
-            box = roi_bgr[y + 4:y + h - 4, x + 4:x + w - 4]
-            gray = cv2.resize(cv2.cvtColor(box, cv2.COLOR_BGR2GRAY), None, fx=2, fy=2,
-                              interpolation=cv2.INTER_CUBIC)
-            _, t = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
-            t = cv2.copyMakeBorder(t, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
-            text = pytesseract.image_to_string(t, config=config).strip()
-            if text:
-                return text
+            gray = cv2.cvtColor(roi_bgr[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
+            votes: list[str] = []
+            for scale in (2, 3):
+                big = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                _, binary = cv2.threshold(big, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+                for height in (32, 40, 50, 64):
+                    digits = _isolate_digits(binary, height)
+                    if digits is not None:
+                        text = pytesseract.image_to_string(digits, config=config).strip()
+                        if text:
+                            votes.append(text)
+            if votes:
+                # La más repetida; en empate, la más larga (un dígito perdido es el error típico).
+                counts = Counter(votes)
+                return max(counts, key=lambda v: (counts[v], len(v)))
     gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
     _, t = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     return pytesseract.image_to_string(t, config=config).strip()
@@ -167,6 +202,38 @@ def _fix_place(word: str, previous: str = "") -> str:
     else:
         match = difflib.get_close_matches(core, _PLACES, n=1, cutoff=0.5)
     return match[0] + word[len(core):] if match else word
+
+
+def _fix_origin_line(kept: list[list]) -> list[list]:
+    """Corrige los lugares de la línea "Lugar originario".
+
+    - Lo que sigue a "Nueva" (hasta el siguiente guion) se junta y se corrige como un solo lugar:
+      "Nueva Ze LON", "Nueva 4" o "Nueva" sola → "Nueva Zelanda".
+    - Las demás palabras dudosas se comparan con la lista de lugares.
+    - Al final de un lugar no van números: se quitan.
+    """
+    start = next((i + 1 for i, (w, _) in enumerate(kept) if "orig" in w.lower()), 0)
+    head, places = kept[:start], kept[start:]
+    out: list[list] = []
+    i = 0
+    while i < len(places):
+        word, conf = places[i]
+        if _alnum(word).lower() == "nueva":
+            j = i + 1
+            while j < len(places) and places[j][0] not in ("-", "–"):
+                j += 1
+            rest = "".join(_alnum(w) for w, _ in places[i + 1:j])
+            out.append(["Nueva", conf])
+            out.append([_fix_place(rest or "Zelanda", "Nueva"), conf])
+            i = j
+            continue
+        if len(_alnum(word)) >= 4 and conf < 60:
+            word = _fix_place(word, out[-1][0] if out else "")
+        out.append([word, conf])
+        i += 1
+    while out and (_alnum(out[-1][0]).isdigit() or out[-1][0] in ("-", "–")):
+        out.pop()
+    return head + out
 
 
 def _clean_words(words: list[tuple[str, float]], strict: bool = False) -> str:
@@ -205,11 +272,7 @@ def _clean_words(words: list[tuple[str, float]], strict: bool = False) -> str:
 
     line = " ".join(w for w, _ in kept)
     if strict and _LABELS[1][0].match(line):  # "Lugar originario: ..."
-        for i in range(2, len(kept)):
-            word, conf = kept[i]
-            after_nueva = _alnum(kept[i - 1][0]).lower() == "nueva"
-            if len(_alnum(word)) >= 4 and (conf < 60 or after_nueva):
-                kept[i][0] = _fix_place(word, kept[i - 1][0])
+        kept = _fix_origin_line(kept)
         line = " ".join(w for w, _ in kept)
 
     line = re.sub(r"^Nombre\W+cient", "Nombre cient", line)
@@ -218,6 +281,22 @@ def _clean_words(words: list[tuple[str, float]], strict: bool = False) -> str:
             line = pattern.sub(label, line, count=1).strip()
             break
     return line
+
+
+_SHORT_WORDS = {"de", "del", "la", "el", "los", "las", "y", "e", "o", "u", "en"}
+
+
+def _join_split_word(line: str) -> str:
+    """Une una palabra partida por el OCR en dos pedazos cortos: "Cip rés" → "Ciprés"."""
+    words = line.split()
+    out: list[str] = []
+    for w in words:
+        if (out and len(_alnum(out[-1])) <= 3 and len(_alnum(w)) <= 3 and w[:1].islower()
+                and w.lower() not in _SHORT_WORDS and out[-1].lower() not in _SHORT_WORDS):
+            out[-1] += w
+        else:
+            out.append(w)
+    return " ".join(out)
 
 
 def _read_lines(pytesseract, image: np.ndarray, lang: str, psm: int, strict: bool = False) -> str:
@@ -280,6 +359,8 @@ def extract_fields(aligned_bgr: np.ndarray, fields: dict | None = None):
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             psm = 7 if field in SINGLE_LINE_FIELDS else 6
             text = _read_lines(pytesseract, _prepare_text(gray), lang, psm, strict=(field == "informacion"))
+            if field == "nombre":
+                text = _join_split_word(text)
 
         results[field] = text
         cv2.rectangle(annotated, (x0, y0), (x1, y1), (0, 255, 0), 2)
