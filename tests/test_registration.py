@@ -147,3 +147,22 @@ def test_compare_detectors_reports_failures_not_zeros(template):
     rows = compare_detectors(blank, template, AlignParams())
     assert all(r["status"] == "falló" and r["error"] for r in rows)
     assert all("inliers" not in r for r in rows)
+
+
+def test_robust_alignment_with_template_mask():
+    import cv2
+    import numpy as np
+    from src.pipeline import AlignParams, align_images_robust
+
+    rng = np.random.default_rng(5)
+    tpl = np.full((500, 700, 3), 255, np.uint8)
+    for _ in range(300):
+        c = tuple(int(v) for v in rng.integers(0, [700, 500]))
+        cv2.circle(tpl, c, int(rng.integers(3, 10)), tuple(int(v) for v in rng.integers(0, 200, 3)), -1)
+    M = cv2.getRotationMatrix2D((350, 250), 12, 0.9)
+    img = cv2.warpAffine(tpl, M, (700, 500), borderValue=(255, 255, 255))
+    mask = np.full(tpl.shape[:2], 255, np.uint8)
+    mask[200:300, 200:500] = 0
+    res = align_images_robust(img, tpl, AlignParams(), template_mask=mask)
+    assert res.metrics["inliers"] >= 15
+    assert res.aligned.shape == tpl.shape

@@ -96,7 +96,10 @@ def estimate_homography(
             "Prueba a subir el Lowe ratio, aumentar las características o cambiar de detector."
         )
     pts_in, pts_tp = matches_to_points(matches, kps_input, kps_template)
-    H, mask = cv2.findHomography(pts_in.reshape(-1, 1, 2), pts_tp.reshape(-1, 1, 2), cv2.RANSAC, ransac_threshold)
+    # MAGSAC++ (OpenCV ≥ 4.5) es más robusto que RANSAC clásico cuando hay muchos emparejamientos falsos.
+    method = getattr(cv2, "USAC_MAGSAC", cv2.RANSAC)
+    H, mask = cv2.findHomography(pts_in.reshape(-1, 1, 2), pts_tp.reshape(-1, 1, 2), method, ransac_threshold,
+                                 maxIters=10000, confidence=0.999)
     if H is None or mask is None:
         raise RegistrationError("OpenCV no pudo calcular una homografía con estas correspondencias.")
     inlier_mask = mask.ravel().astype(bool)

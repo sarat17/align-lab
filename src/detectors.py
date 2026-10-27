@@ -96,12 +96,16 @@ class DetectionResult:
 
 
 def detect_and_describe(
-    image: np.ndarray, detector_name: str, max_features: int = 5000, min_keypoints: int = 4
+    image: np.ndarray, detector_name: str, max_features: int = 5000, min_keypoints: int = 4,
+    mask: np.ndarray | None = None,
 ) -> DetectionResult:
-    """Detecta keypoints y descriptores. Lanza ``DetectionError`` si son insuficientes."""
+    """Detecta keypoints y descriptores. Lanza ``DetectionError`` si son insuficientes.
+
+    ``mask`` (uint8, 0 = ignorar) limita la búsqueda a ciertas zonas de la imagen.
+    """
     gray = to_gray(image)
     detector = create_detector(detector_name, max_features)
-    keypoints, descriptors = detector.detectAndCompute(gray, None)
+    keypoints, descriptors = detector.detectAndCompute(gray, mask)
     keypoints = list(keypoints or [])
     if descriptors is None or len(keypoints) < min_keypoints:
         raise DetectionError(

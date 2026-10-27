@@ -278,8 +278,17 @@ def _clean_words(words: list[tuple[str, float]], strict: bool = False) -> str:
     line = re.sub(r"^Nombre\W+cient", "Nombre cient", line)
     for pattern, label in _LABELS:
         if pattern.match(line):
-            line = pattern.sub(label, line, count=1).strip()
-            break
+            return pattern.sub(label, line, count=1).strip()
+    if strict:  # respaldo: etiqueta muy deformada ("Lugar orpinerlo: ...") → la más parecida
+        head, sep, tail = line.partition(":")
+        if sep and len(head) <= 26:
+            labels = [lab for _, lab in _LABELS]
+            best = max(labels, key=lambda lab: difflib.SequenceMatcher(None, head.lower(), lab[:-2].lower()).ratio())
+            if difflib.SequenceMatcher(None, head.lower(), best[:-2].lower()).ratio() >= 0.6:
+                line = best + tail.strip()
+                if best.startswith("Lugar"):
+                    words = [[w, 50.0] for w in line.split()]
+                    line = " ".join(w for w, _ in _fix_origin_line(words))
     return line
 
 

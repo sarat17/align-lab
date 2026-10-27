@@ -103,3 +103,8 @@ def test_split_name_is_joined():
     assert _join_split_word("Pino candelabro") == "Pino candelabro"
     assert _join_split_word("Pino de agua") == "Pino de agua"
     assert _join_split_word("Ají dulce") == "Ají dulce"
+
+
+def test_badly_read_label_falls_back_to_closest():
+    assert _clean_words(_w("Lugar", "orpinerlo:", "Australia"), strict=True) == "Lugar originario: Australia"
+    assert _clean_words(_w("Altura", "del", "ejempiar:", "8", "metros"), strict=True) == "Altura del ejemplar: 8 metros"

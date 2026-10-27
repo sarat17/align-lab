@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
+import numpy as np
 import streamlit as st
 
 from src import detectors, ocr, visualization
@@ -17,7 +18,7 @@ from src.pipeline import (
     ImageLoadError,
     MAX_FILE_MB,
     MAX_PIXELS,
-    align_images,
+    align_images_robust,
     decode_image,
 )
 
@@ -174,6 +175,19 @@ def load_fixed_template(path: str):
         return decode_image(f.read(), path)[0]
 
 
+# Zonas de la plantilla cuyo texto cambia por completo de una placa a otra (nombre y autor).
+# Se ignoran al buscar puntos en común. Las etiquetas "Nombre científico:", "Lugar originario:"
+# y "Altura del ejemplar:" sí se usan: son iguales en todas las placas y ayudan a enderezar.
+TEXT_ZONES = (ocr.FIELDS["nombre"], ocr.FIELDS["autor"])
+
+
+def template_mask(shape) -> np.ndarray:
+    mask = np.full(shape[:2], 255, np.uint8)
+    for x, y, w, h in TEXT_ZONES:
+        mask[max(0, y):y + h, max(0, x):x + w] = 0
+    return mask
+
+
 # ----------------------------------------------------------------- sidebar
 st.sidebar.markdown('<p class="al-label">Tu foto</p>', unsafe_allow_html=True)
 up_in = st.sidebar.file_uploader("Foto de la placa del árbol", type=["png", "jpg", "jpeg", "tif", "tiff"], key="up_in",
@@ -231,7 +245,8 @@ if run and image is not None and template is not None:
     st.session_state.pop("ocr_error", None)
     with st.spinner("Buscando puntos en común con la plantilla y enderezando la foto…"):
         try:
-            st.session_state["result"] = align_images(image, template, params)
+            st.session_state["result"] = align_images_robust(image, template, params,
+                                                             template_mask=template_mask(template.shape))
         except Exception as exc:  # los errores se explican sin traza
             st.session_state.pop("result", None)
             st.session_state["run_error"] = str(exc)

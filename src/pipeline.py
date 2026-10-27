@@ -6,7 +6,7 @@ lógica de procesamiento quede fuera de ``app.py`` y sea testeable sin Streamlit
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 
 import cv2
 import numpy as np
@@ -94,13 +94,67 @@ class AlignResult:
     input_bgr: np.ndarray
 
 
-def align_images(image: np.ndarray, template: np.ndarray, params: AlignParams) -> AlignResult:
-    """Flujo completo. Lanza errores con mensajes entendibles si algo falla."""
+MIN_GOOD_INLIERS = 15  # por debajo, el resultado es dudoso y se reintenta con otra configuración
+
+
+def _shrink(image: np.ndarray, max_side: int):
+    """Reduce la imagen si es muy grande. Devuelve (imagen, factor)."""
+    h, w = image.shape[:2]
+    f = min(1.0, max_side / max(h, w))
+    if f >= 1.0:
+        return image, 1.0
+    return cv2.resize(image, None, fx=f, fy=f, interpolation=cv2.INTER_AREA), f
+
+
+def align_images_robust(image: np.ndarray, template: np.ndarray, params: AlignParams,
+                        template_mask: np.ndarray | None = None) -> AlignResult:
+    """Intenta alinear con varias configuraciones y devuelve el mejor resultado.
+
+    Empieza con los parámetros pedidos; si falla o hay pocos inliers, prueba con un ratio más
+    tolerante, con la foto reducida (las fotos de celular muy grandes llenan los puntos de pasto)
+    y con el otro detector. Gana el intento con más inliers.
+    """
+    attempts = [(params, None)]
+    attempts.append((AlignParams(**{**asdict(params), "ratio": min(0.85, params.ratio + 0.07)}), None))
+    attempts.append((params, 1600))
+    other = [d for d in detectors.available_detectors() if d != detectors.resolve_detector_name(params.detector)]
+    if other:
+        attempts.append((AlignParams(**{**asdict(params), "detector": other[0], "ratio": 0.8}), 1600))
+
+    best, first_error = None, None
+    for p, max_side in attempts:
+        try:
+            small, f = _shrink(image, max_side) if max_side else (image, 1.0)
+            result = align_images(small, template, p, template_mask=template_mask)
+            if f != 1.0:  # aplicar la homografía a la foto original para no perder resolución
+                H = result.H @ np.diag([f, f, 1.0])
+                aligned, coverage = registration.warp_to_template(image, H, template.shape)
+                result = replace(result, H=H, aligned=visualization.to_bgr(aligned), coverage=coverage,
+                                 input_bgr=visualization.to_bgr(image))
+        except Exception as exc:  # noqa: BLE001 — se reintenta con la siguiente configuración
+            first_error = first_error or exc
+            continue
+        if best is None or result.metrics["inliers"] > best.metrics["inliers"]:
+            best = result
+        if best.metrics["inliers"] >= MIN_GOOD_INLIERS * 2:
+            break
+    if best is None:
+        raise first_error
+    return best
+
+
+def align_images(image: np.ndarray, template: np.ndarray, params: AlignParams,
+                 template_mask: np.ndarray | None = None) -> AlignResult:
+    """Flujo completo. Lanza errores con mensajes entendibles si algo falla.
+
+    ``template_mask`` (uint8, 0 = ignorar) excluye zonas de la plantilla al buscar puntos clave, p. ej.
+    el texto que cambia de una placa a otra.
+    """
     validate_params(params)
     with metrics.timer() as t:
         detector_used = detectors.resolve_detector_name(params.detector)
         det_in = detectors.detect_and_describe(image, detector_used, params.max_features)
-        det_tp = detectors.detect_and_describe(template, detector_used, params.max_features)
+        det_tp = detectors.detect_and_describe(template, detector_used, params.max_features, mask=template_mask)
 
         ratio_matches = matching.match_descriptors(det_in.descriptors, det_tp.descriptors, detector_used, params.ratio)
         if len(ratio_matches) < 4:
