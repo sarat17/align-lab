@@ -71,3 +71,17 @@ def test_doubtful_place_is_corrected_only_in_origin_line():
     # "científico" con baja confianza no debe convertirse en un lugar
     line = [("Nombre", 93), ("científico:", 58), ("Pinus", 93), ("patula", 92)]
     assert _clean_words(line, strict=True) == "Nombre científico: Pinus patula"
+
+
+def test_word_after_nueva_only_matches_nueva_places():
+    for misread in ("Venezuela", "Zelqzuela", "Zelaya", "Zelanda"):
+        line = [("Lugar", 95), ("originario:", 95), ("Nueva", 96), (misread, 90)]
+        assert _clean_words(line, strict=True) == "Lugar originario: Nueva Zelanda"
+    line = [("Lugar", 95), ("originario:", 95), ("Nueva", 96), ("Guinea", 95)]
+    assert _clean_words(line, strict=True) == "Lugar originario: Nueva Guinea"
+    assert _clean_words(_w("Lugar", "originario:", "Venezuela"), strict=True) == "Lugar originario: Venezuela"
+
+
+def test_screw_read_as_number_at_line_start_is_removed():
+    assert _clean_words(_w("7", "Altura", "del", "ejemplar:", "14", "metros"), strict=True) == \
+        "Altura del ejemplar: 14 metros"
