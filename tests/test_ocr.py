@@ -5,7 +5,7 @@ import pytest
 from src import ocr
 from src.pipeline import AlignParams, align_images
 
-pytestmark = pytest.mark.skipif(not ocr.ocr_available(), reason="Tesseract no está instalado")
+needs_tesseract = pytest.mark.skipif(not ocr.ocr_available(), reason="Tesseract no está instalado")
 
 
 def _form():
@@ -21,6 +21,7 @@ def _form():
     return img
 
 
+@needs_tesseract
 def test_ocr_after_alignment():
     template = _form()
     M = cv2.getRotationMatrix2D((675, 450), 4, 0.95)
@@ -33,7 +34,40 @@ def test_ocr_after_alignment():
     assert annotated.shape == aligned.shape
 
 
+@needs_tesseract
 def test_roi_outside_image_is_empty():
     small = np.full((50, 50, 3), 255, np.uint8)
     results, _ = ocr.extract_fields(small, {"fuera": (500, 500, 10, 10)})
     assert results == {"fuera": ""}
+
+
+# --- limpieza del texto (no necesita Tesseract) -------------------------------
+from src.ocr import _clean_words  # noqa: E402
+
+
+def _w(*words, conf=90.0):
+    return [(w, conf) for w in words]
+
+
+def test_screws_read_as_letters_are_removed():
+    line = _w("e", "Lugar", "originario:", "Australia", "Y")
+    assert _clean_words(line, strict=True) == "Lugar originario: Australia"
+    assert _clean_words(_w("Lugar", "originario:", "América", "NO"), strict=True) == "Lugar originario: América"
+
+
+def test_numbers_inside_lines_are_kept():
+    assert _clean_words(_w("Altura", "del", "ejemplar:", "6", "metros", "|"), strict=True) == "Altura del ejemplar: 6 metros"
+
+
+def test_labels_are_normalized():
+    assert _clean_words(_w("Nombre.científico:", "Eucalyptus", "cinerea"), strict=True) == \
+        "Nombre científico: Eucalyptus cinerea"
+    assert _clean_words(_w("Lggar", "originario:", "México"), strict=True) == "Lugar originario: México"
+
+
+def test_doubtful_place_is_corrected_only_in_origin_line():
+    line = [("Lugar", 95), ("originario:", 95), ("Nueva", 96), ("Zelqgia", 0)]
+    assert _clean_words(line, strict=True) == "Lugar originario: Nueva Zelanda"
+    # "científico" con baja confianza no debe convertirse en un lugar
+    line = [("Nombre", 93), ("científico:", 58), ("Pinus", 93), ("patula", 92)]
+    assert _clean_words(line, strict=True) == "Nombre científico: Pinus patula"
